@@ -1,7 +1,7 @@
 <p align="center">
-  <img src="assets/logo.png" alt="Winning Circle Bot" width="200"/>
+  <img src="assets/logobot.png" alt="Winning Circle Bot" width="400" style="border-radius: 12px;"/>
 </p>
-
+</p>
 <h1 align="center">🏆 Winning Circle Bot</h1>
 
 <p align="center">
