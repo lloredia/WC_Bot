@@ -285,13 +285,16 @@ async def health():
 @app.get("/test-openai")
 async def test_openai():
     """Test endpoint to debug OpenAI connection."""
+    import traceback
+    
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         return {"error": "No OPENAI_API_KEY found in environment"}
     
     return_data = {
         "api_key_found": True,
-        "api_key_prefix": api_key[:8] + "..." if len(api_key) > 8 else "too_short"
+        "api_key_prefix": api_key[:8] + "..." if len(api_key) > 8 else "too_short",
+        "api_key_length": len(api_key)
     }
     
     try:
@@ -305,7 +308,9 @@ async def test_openai():
         return_data["response"] = response.choices[0].message.content
     except Exception as e:
         return_data["success"] = False
+        return_data["error_type"] = type(e).__name__
         return_data["error"] = str(e)
+        return_data["traceback"] = traceback.format_exc()
     
     return return_data
 
