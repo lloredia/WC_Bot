@@ -5,6 +5,7 @@ from telegram.ext import Application, CommandHandler, CallbackQueryHandler, Cont
 from datetime import datetime
 import pytz
 from openai import OpenAI
+import httpx
 
 # ============ CONFIG ============
 TOKEN = os.getenv("BOT_TOKEN")
@@ -12,8 +13,43 @@ WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "change-me")
 BASE_URL = os.getenv("BASE_URL")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
+# GitHub Pages URLs
+GITHUB_PAGES_BASE = "https://lloredia.github.io/Winning-circle"
+REPORTS_URL = f"{GITHUB_PAGES_BASE}/reports"
+BETSLIPS_URL = f"{GITHUB_PAGES_BASE}/betslips"
+
 app = FastAPI()
 tg_app = Application.builder().token(TOKEN).build()
+
+
+# ============ GITHUB PAGES HELPERS ============
+async def get_latest_report_url() -> str | None:
+    """Fetch the latest report filename from GitHub Pages."""
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{REPORTS_URL}/latest.txt", timeout=10)
+            if resp.status_code == 200:
+                filename = resp.text.strip()
+                return f"{REPORTS_URL}/{filename}"
+    except Exception as e:
+        print(f"[ERROR] Failed to fetch latest report: {e}")
+    return None
+
+
+async def get_todays_betslip_url() -> str | None:
+    """Get today's bet slip image URL."""
+    tz = pytz.timezone("America/Chicago")
+    today = datetime.now(tz).strftime("%Y-%m-%d")
+    betslip_url = f"{BETSLIPS_URL}/betslip_{today}.png"
+    
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.head(betslip_url, timeout=10)
+            if resp.status_code == 200:
+                return betslip_url
+    except Exception as e:
+        print(f"[ERROR] Failed to check betslip: {e}")
+    return None
 
 
 # ============ OPENAI HELPER ============
@@ -103,6 +139,8 @@ Your AI-powered betting intelligence assistant.
 /nhl - NHL picks
 /soccer - Soccer picks
 /ncaab - College basketball
+/slip - Today's bet slip image
+/report - Full PDF report
 /help - Show help
 
 <i>For entertainment only. Gamble responsibly.</i>"""
@@ -120,6 +158,10 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /ncaab - College basketball picks
 /picks - Interactive league menu
 
+<b>Reports:</b>
+/slip - Today's bet slip image
+/report - Full PDF report link
+
 <b>Other:</b>
 /start - Welcome message
 /help - This message
@@ -127,6 +169,75 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 <i>Picks are AI-generated for entertainment only.</i>"""
     
     await update.message.reply_text(help_text, parse_mode="HTML")
+
+
+# ============ REPORT COMMANDS ============
+async def slip_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send today's bet slip image."""
+    msg = await update.message.reply_text("🎫 Fetching today's bet slip...")
+    
+    betslip_url = await get_todays_betslip_url()
+    report_url = await get_latest_report_url()
+    
+    if betslip_url:
+        tz = pytz.timezone("America/Chicago")
+        today = datetime.now(tz).strftime("%B %d, %Y")
+        
+        caption = f"""🏆 <b>WINNING CIRCLE</b>
+📅 {today}
+
+"""
+        if report_url:
+            caption += f"📄 <a href='{report_url}'>View Full Report</a>"
+        
+        await msg.delete()
+        await update.message.reply_photo(
+            photo=betslip_url,
+            caption=caption,
+            parse_mode="HTML"
+        )
+    else:
+        await msg.edit_text(
+            "❌ No bet slip available for today yet.\n\n"
+            "Bet slips are generated at midnight Chicago time.\n"
+            "Use /picks to get live AI picks instead."
+        )
+
+
+async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send link to latest PDF report."""
+    msg = await update.message.reply_text("📄 Fetching latest report...")
+    
+    report_url = await get_latest_report_url()
+    betslip_url = await get_todays_betslip_url()
+    
+    if report_url:
+        tz = pytz.timezone("America/Chicago")
+        today = datetime.now(tz).strftime("%B %d, %Y")
+        
+        keyboard = [[InlineKeyboardButton("📄 Open PDF Report", url=report_url)]]
+        
+        if betslip_url:
+            keyboard.append([InlineKeyboardButton("🎫 View Bet Slip", url=betslip_url)])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await msg.edit_text(
+            f"""🏆 <b>WINNING CIRCLE</b>
+📅 {today}
+
+Your daily report is ready!
+
+Click below to view:""",
+            reply_markup=reply_markup,
+            parse_mode="HTML"
+        )
+    else:
+        await msg.edit_text(
+            "❌ No report available yet.\n\n"
+            "Reports are generated at midnight Chicago time.\n"
+            "Use /picks to get live AI picks instead."
+        )
 
 
 # ============ LEAGUE COMMANDS ============
@@ -141,11 +252,15 @@ async def picks_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("⚽ Soccer", callback_data="league_soccer"),
             InlineKeyboardButton("🏀 NCAAB", callback_data="league_ncaab"),
         ],
+        [
+            InlineKeyboardButton("🎫 Today's Slip", callback_data="show_slip"),
+            InlineKeyboardButton("📄 Full Report", callback_data="show_report"),
+        ],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await update.message.reply_text(
-        "🏆 <b>WINNING CIRCLE</b>\n\nSelect a league:",
+        "🏆 <b>WINNING CIRCLE</b>\n\nSelect an option:",
         reply_markup=reply_markup,
         parse_mode="HTML"
     )
@@ -216,11 +331,12 @@ async def ncaab_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============ CALLBACK HANDLER ============
-async def league_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Handle inline keyboard callbacks."""
     query = update.callback_query
     await query.answer()
     
+    # League selections
     league_map = {
         "league_nba": ("nba", "🏀", "NBA"),
         "league_nhl": ("nhl", "🏒", "NHL"),
@@ -228,16 +344,13 @@ async def league_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "league_ncaab": ("ncaab", "🏀", "NCAAB"),
     }
     
-    if query.data not in league_map:
-        await query.edit_message_text("❌ Unknown selection.")
-        return
-    
-    league, emoji, name = league_map[query.data]
-    await query.edit_message_text(f"{emoji} Fetching {name} picks...")
-    
-    picks = await fetch_league_picks(league)
-    
-    text = f"""{emoji} <b>{name} PICKS</b>
+    if query.data in league_map:
+        league, emoji, name = league_map[query.data]
+        await query.edit_message_text(f"{emoji} Fetching {name} picks...")
+        
+        picks = await fetch_league_picks(league)
+        
+        text = f"""{emoji} <b>{name} PICKS</b>
 📅 {datetime.now(pytz.timezone('America/Chicago')).strftime('%B %d, %Y')}
 ━━━━━━━━━━━━━━━
 
@@ -245,8 +358,38 @@ async def league_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 ━━━━━━━━━━━━━━━
 <i>For entertainment only.</i>"""
+        
+        await query.edit_message_text(text, parse_mode="HTML")
     
-    await query.edit_message_text(text, parse_mode="HTML")
+    elif query.data == "show_slip":
+        await query.edit_message_text("🎫 Fetching bet slip...")
+        betslip_url = await get_todays_betslip_url()
+        
+        if betslip_url:
+            await query.message.reply_photo(
+                photo=betslip_url,
+                caption="🏆 <b>Today's Bet Slip</b>",
+                parse_mode="HTML"
+            )
+            await query.delete_message()
+        else:
+            await query.edit_message_text("❌ No bet slip available for today yet.")
+    
+    elif query.data == "show_report":
+        report_url = await get_latest_report_url()
+        
+        if report_url:
+            keyboard = [[InlineKeyboardButton("📄 Open PDF Report", url=report_url)]]
+            await query.edit_message_text(
+                "🏆 <b>WINNING CIRCLE</b>\n\nClick to view your report:",
+                reply_markup=InlineKeyboardMarkup(keyboard),
+                parse_mode="HTML"
+            )
+        else:
+            await query.edit_message_text("❌ No report available yet.")
+    
+    else:
+        await query.edit_message_text("❌ Unknown selection.")
 
 
 # ============ REGISTER HANDLERS ============
@@ -257,7 +400,9 @@ tg_app.add_handler(CommandHandler("nba", nba_command))
 tg_app.add_handler(CommandHandler("nhl", nhl_command))
 tg_app.add_handler(CommandHandler("soccer", soccer_command))
 tg_app.add_handler(CommandHandler("ncaab", ncaab_command))
-tg_app.add_handler(CallbackQueryHandler(league_callback, pattern="^league_"))
+tg_app.add_handler(CommandHandler("slip", slip_command))
+tg_app.add_handler(CommandHandler("report", report_command))
+tg_app.add_handler(CallbackQueryHandler(button_callback))
 
 
 # ============ FASTAPI ROUTES ============
