@@ -17,16 +17,10 @@ tg_app = Application.builder().token(TOKEN).build()
 
 
 # ============ OPENAI HELPER ============
-def get_openai_client():
-    if not OPENAI_API_KEY:
-        return None
-    return OpenAI(api_key=OPENAI_API_KEY)
-
-
 async def fetch_league_picks(league: str) -> str:
     """Fetch picks for a specific league from OpenAI."""
-    client = get_openai_client()
-    if not client:
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
         return "⚠️ AI not configured. Contact admin."
     
     tz = pytz.timezone("America/Chicago")
@@ -80,6 +74,7 @@ Only the picks. No intro or outro.""",
         return "❌ Unknown league."
     
     try:
+        client = OpenAI(api_key=api_key)
         response = client.chat.completions.create(
             model="gpt-4o",
             messages=[
@@ -91,7 +86,9 @@ Only the picks. No intro or outro.""",
         )
         return response.choices[0].message.content
     except Exception as e:
-        return f"⚠️ Error: {str(e)[:100]}"
+        error_msg = str(e)
+        print(f"[OPENAI ERROR] {error_msg}")
+        return f"⚠️ Error: {error_msg[:100]}"
 
 
 # ============ BASIC COMMANDS ============
@@ -283,6 +280,34 @@ async def on_shutdown():
 @app.get("/")
 async def health():
     return {"status": "ok", "bot": "Winning Circle"}
+
+
+@app.get("/test-openai")
+async def test_openai():
+    """Test endpoint to debug OpenAI connection."""
+    api_key = os.getenv("OPENAI_API_KEY")
+    if not api_key:
+        return {"error": "No OPENAI_API_KEY found in environment"}
+    
+    return_data = {
+        "api_key_found": True,
+        "api_key_prefix": api_key[:8] + "..." if len(api_key) > 8 else "too_short"
+    }
+    
+    try:
+        client = OpenAI(api_key=api_key)
+        response = client.chat.completions.create(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": "Say hello in 5 words"}],
+            max_tokens=20
+        )
+        return_data["success"] = True
+        return_data["response"] = response.choices[0].message.content
+    except Exception as e:
+        return_data["success"] = False
+        return_data["error"] = str(e)
+    
+    return return_data
 
 
 @app.post("/webhook/{secret}")
