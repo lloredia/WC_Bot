@@ -1,28 +1,49 @@
 import os
+import json
 from fastapi import FastAPI, Request
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from datetime import datetime
 import pytz
-from openai import OpenAI
 import httpx
 
 # ============ CONFIG ============
 TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_SECRET = os.getenv("WEBHOOK_SECRET", "change-me")
 BASE_URL = os.getenv("BASE_URL")
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
 # GitHub Pages URLs
 GITHUB_PAGES_BASE = "https://lloredia.github.io/Winning-circle"
 REPORTS_URL = f"{GITHUB_PAGES_BASE}/reports"
 BETSLIPS_URL = f"{GITHUB_PAGES_BASE}/betslips"
+PICKS_URL = f"{GITHUB_PAGES_BASE}/picks"
 
 app = FastAPI()
 tg_app = Application.builder().token(TOKEN).build()
 
 
 # ============ GITHUB PAGES HELPERS ============
+async def get_latest_picks() -> dict | None:
+    """Fetch the latest picks JSON from GitHub Pages."""
+    try:
+        async with httpx.AsyncClient() as client:
+            # First get the latest.json pointer
+            resp = await client.get(f"{PICKS_URL}/latest.json", timeout=10)
+            if resp.status_code != 200:
+                return None
+            
+            latest_info = resp.json()
+            picks_file = latest_info.get("latest")
+            
+            # Then fetch the actual picks
+            resp = await client.get(f"{PICKS_URL}/{picks_file}", timeout=10)
+            if resp.status_code == 200:
+                return resp.json()
+    except Exception as e:
+        print(f"[ERROR] Failed to fetch picks: {e}")
+    return None
+
+
 async def get_latest_report_url() -> str | None:
     """Fetch the latest report filename from GitHub Pages."""
     try:
@@ -52,79 +73,32 @@ async def get_todays_betslip_url() -> str | None:
     return None
 
 
-# ============ OPENAI HELPER ============
-async def fetch_league_picks(league: str) -> str:
-    """Fetch picks for a specific league from OpenAI."""
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        return "⚠️ AI not configured. Contact admin."
-    
+def format_picks_message(picks: list, league_name: str, emoji: str) -> str:
+    """Format picks into a nice Telegram message."""
     tz = pytz.timezone("America/Chicago")
-    now = datetime.now(tz)
-    date_str = now.strftime("%B %d, %Y")
+    date_str = datetime.now(tz).strftime('%B %d, %Y')
     
-    league_prompts = {
-        "nba": f"""Today is {date_str}. Give me 3 NBA moneyline underdog picks for today's games.
+    header = f"""{emoji} <b>{league_name} PICKS</b>
+📅 {date_str}
+━━━━━━━━━━━━━━━
 
-Format each pick EXACTLY like this:
-🏀 [Team Name] ML
-💰 Odds: [+XXX]
-📊 Confidence: [High/Medium/Low]
-📝 [One sentence reason]
-
-Only the picks. No intro or outro.""",
-
-        "nhl": f"""Today is {date_str}. Give me 3 NHL moneyline underdog picks for today's games.
-
-Format each pick EXACTLY like this:
-🏒 [Team Name] ML
-💰 Odds: [+XXX]
-📊 Confidence: [High/Medium/Low]
-📝 [One sentence reason]
-
-Only the picks. No intro or outro.""",
-
-        "soccer": f"""Today is {date_str}. Give me 3 soccer moneyline picks for today's major league games.
-
-Format each pick EXACTLY like this:
-⚽ [Team Name] ML
-💰 Odds: [+XXX or -XXX]
-📊 Confidence: [High/Medium/Low]
-📝 [One sentence reason]
-
-Only the picks. No intro or outro.""",
-
-        "ncaab": f"""Today is {date_str}. Give me 3 NCAAB moneyline underdog picks for today's games.
-
-Format each pick EXACTLY like this:
-🏀 [Team Name] ML
-💰 Odds: [+XXX]
-📊 Confidence: [High/Medium/Low]
-📝 [One sentence reason]
-
-Only the picks. No intro or outro.""",
-    }
+"""
     
-    prompt = league_prompts.get(league.lower())
-    if not prompt:
-        return "❌ Unknown league."
+    body = ""
+    for pick in picks:
+        body += f"<b>{pick.get('pick', 'Unknown')}</b>\n"
+        if pick.get('odds'):
+            body += f"💰 Odds: {pick.get('odds')}\n"
+        if pick.get('confidence'):
+            body += f"📊 {pick.get('confidence')} Confidence\n"
+        if pick.get('reason'):
+            body += f"📝 {pick.get('reason')}\n"
+        body += "\n"
     
-    try:
-        client = OpenAI(api_key=api_key)
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[
-                {"role": "system", "content": "You are a sports betting analyst. Give concise, actionable picks."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=1000,
-            temperature=0.7
-        )
-        return response.choices[0].message.content
-    except Exception as e:
-        error_msg = str(e)
-        print(f"[OPENAI ERROR] {error_msg}")
-        return f"⚠️ Error: {error_msg[:100]}"
+    footer = """━━━━━━━━━━━━━━━
+<i>For entertainment only.</i>"""
+    
+    return header + body + footer
 
 
 # ============ BASIC COMMANDS ============
@@ -134,11 +108,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 Your AI-powered betting intelligence assistant.
 
 <b>Commands:</b>
-/picks - View all leagues
-/nba - NBA picks
-/nhl - NHL picks
-/soccer - Soccer picks
-/ncaab - College basketball
+/picks - All today's picks
 /slip - Today's bet slip image
 /report - Full PDF report
 /help - Show help
@@ -151,14 +121,8 @@ Your AI-powered betting intelligence assistant.
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = """🏆 <b>WINNING CIRCLE HELP</b>
 
-<b>League Commands:</b>
-/nba - NBA moneyline picks
-/nhl - NHL moneyline picks
-/soccer - Soccer picks
-/ncaab - College basketball picks
-/picks - Interactive league menu
-
-<b>Reports:</b>
+<b>Commands:</b>
+/picks - View all today's picks
 /slip - Today's bet slip image
 /report - Full PDF report link
 
@@ -166,9 +130,79 @@ async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 /start - Welcome message
 /help - This message
 
-<i>Picks are AI-generated for entertainment only.</i>"""
+<i>Picks are generated daily at midnight Chicago time.</i>"""
     
     await update.message.reply_text(help_text, parse_mode="HTML")
+
+
+# ============ PICKS COMMANDS ============
+async def picks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Show all picks from today's report."""
+    msg = await update.message.reply_text("🏆 Fetching today's picks...")
+    
+    picks_data = await get_latest_picks()
+    
+    if not picks_data:
+        await msg.edit_text(
+            "❌ No picks available yet.\n\n"
+            "Picks are generated at midnight Chicago time.\n"
+            "Check back later!"
+        )
+        return
+    
+    date_str = picks_data.get("date", "Unknown")
+    leagues = picks_data.get("leagues", {})
+    
+    all_picks_text = f"""🏆 <b>WINNING CIRCLE</b>
+📅 {date_str}
+━━━━━━━━━━━━━━━
+
+"""
+    
+    # Add underdog picks (NBA/NHL/NCAAB)
+    if "underdog" in leagues:
+        all_picks_text += "🎯 <b>NBA / NHL / NCAAB</b>\n\n"
+        for pick in leagues["underdog"].get("picks", []):
+            all_picks_text += f"• <b>{pick.get('pick', '')}</b>"
+            if pick.get('odds'):
+                all_picks_text += f" | {pick.get('odds')}"
+            if pick.get('confidence'):
+                all_picks_text += f" | {pick.get('confidence')}"
+            all_picks_text += "\n"
+        all_picks_text += "\n"
+    
+    # Add soccer picks
+    if "soccer" in leagues:
+        all_picks_text += "⚽ <b>SOCCER</b>\n\n"
+        for pick in leagues["soccer"].get("picks", []):
+            all_picks_text += f"• <b>{pick.get('pick', '')}</b>"
+            if pick.get('odds'):
+                all_picks_text += f" | {pick.get('odds')}"
+            if pick.get('confidence'):
+                all_picks_text += f" | {pick.get('confidence')}"
+            all_picks_text += "\n"
+        all_picks_text += "\n"
+    
+    all_picks_text += """━━━━━━━━━━━━━━━
+<i>For entertainment only.</i>"""
+    
+    # Add buttons for slip and report
+    keyboard = []
+    
+    betslip_url = await get_todays_betslip_url()
+    report_url = await get_latest_report_url()
+    
+    if betslip_url or report_url:
+        row = []
+        if betslip_url:
+            row.append(InlineKeyboardButton("🎫 Bet Slip", callback_data="show_slip"))
+        if report_url:
+            row.append(InlineKeyboardButton("📄 PDF Report", url=report_url))
+        keyboard.append(row)
+    
+    reply_markup = InlineKeyboardMarkup(keyboard) if keyboard else None
+    
+    await msg.edit_text(all_picks_text, parse_mode="HTML", reply_markup=reply_markup)
 
 
 # ============ REPORT COMMANDS ============
@@ -200,7 +234,7 @@ async def slip_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await msg.edit_text(
             "❌ No bet slip available for today yet.\n\n"
             "Bet slips are generated at midnight Chicago time.\n"
-            "Use /picks to get live AI picks instead."
+            "Use /picks to see if picks are available."
         )
 
 
@@ -218,7 +252,7 @@ async def report_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = [[InlineKeyboardButton("📄 Open PDF Report", url=report_url)]]
         
         if betslip_url:
-            keyboard.append([InlineKeyboardButton("🎫 View Bet Slip", url=betslip_url)])
+            keyboard.append([InlineKeyboardButton("🎫 View Bet Slip", callback_data="show_slip")])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
@@ -236,98 +270,8 @@ Click below to view:""",
         await msg.edit_text(
             "❌ No report available yet.\n\n"
             "Reports are generated at midnight Chicago time.\n"
-            "Use /picks to get live AI picks instead."
+            "Use /picks to see if picks are available."
         )
-
-
-# ============ LEAGUE COMMANDS ============
-async def picks_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Show interactive league selection menu."""
-    keyboard = [
-        [
-            InlineKeyboardButton("🏀 NBA", callback_data="league_nba"),
-            InlineKeyboardButton("🏒 NHL", callback_data="league_nhl"),
-        ],
-        [
-            InlineKeyboardButton("⚽ Soccer", callback_data="league_soccer"),
-            InlineKeyboardButton("🏀 NCAAB", callback_data="league_ncaab"),
-        ],
-        [
-            InlineKeyboardButton("🎫 Today's Slip", callback_data="show_slip"),
-            InlineKeyboardButton("📄 Full Report", callback_data="show_report"),
-        ],
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await update.message.reply_text(
-        "🏆 <b>WINNING CIRCLE</b>\n\nSelect an option:",
-        reply_markup=reply_markup,
-        parse_mode="HTML"
-    )
-
-
-async def nba_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("🏀 Fetching NBA picks...")
-    picks = await fetch_league_picks("nba")
-    
-    text = f"""🏀 <b>NBA PICKS</b>
-📅 {datetime.now(pytz.timezone('America/Chicago')).strftime('%B %d, %Y')}
-━━━━━━━━━━━━━━━
-
-{picks}
-
-━━━━━━━━━━━━━━━
-<i>For entertainment only.</i>"""
-    
-    await msg.edit_text(text, parse_mode="HTML")
-
-
-async def nhl_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("🏒 Fetching NHL picks...")
-    picks = await fetch_league_picks("nhl")
-    
-    text = f"""🏒 <b>NHL PICKS</b>
-📅 {datetime.now(pytz.timezone('America/Chicago')).strftime('%B %d, %Y')}
-━━━━━━━━━━━━━━━
-
-{picks}
-
-━━━━━━━━━━━━━━━
-<i>For entertainment only.</i>"""
-    
-    await msg.edit_text(text, parse_mode="HTML")
-
-
-async def soccer_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("⚽ Fetching Soccer picks...")
-    picks = await fetch_league_picks("soccer")
-    
-    text = f"""⚽ <b>SOCCER PICKS</b>
-📅 {datetime.now(pytz.timezone('America/Chicago')).strftime('%B %d, %Y')}
-━━━━━━━━━━━━━━━
-
-{picks}
-
-━━━━━━━━━━━━━━━
-<i>For entertainment only.</i>"""
-    
-    await msg.edit_text(text, parse_mode="HTML")
-
-
-async def ncaab_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    msg = await update.message.reply_text("🏀 Fetching NCAAB picks...")
-    picks = await fetch_league_picks("ncaab")
-    
-    text = f"""🏀 <b>NCAAB PICKS</b>
-📅 {datetime.now(pytz.timezone('America/Chicago')).strftime('%B %d, %Y')}
-━━━━━━━━━━━━━━━
-
-{picks}
-
-━━━━━━━━━━━━━━━
-<i>For entertainment only.</i>"""
-    
-    await msg.edit_text(text, parse_mode="HTML")
 
 
 # ============ CALLBACK HANDLER ============
@@ -336,70 +280,29 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
     
-    # League selections
-    league_map = {
-        "league_nba": ("nba", "🏀", "NBA"),
-        "league_nhl": ("nhl", "🏒", "NHL"),
-        "league_soccer": ("soccer", "⚽", "SOCCER"),
-        "league_ncaab": ("ncaab", "🏀", "NCAAB"),
-    }
-    
-    if query.data in league_map:
-        league, emoji, name = league_map[query.data]
-        await query.edit_message_text(f"{emoji} Fetching {name} picks...")
-        
-        picks = await fetch_league_picks(league)
-        
-        text = f"""{emoji} <b>{name} PICKS</b>
-📅 {datetime.now(pytz.timezone('America/Chicago')).strftime('%B %d, %Y')}
-━━━━━━━━━━━━━━━
-
-{picks}
-
-━━━━━━━━━━━━━━━
-<i>For entertainment only.</i>"""
-        
-        await query.edit_message_text(text, parse_mode="HTML")
-    
-    elif query.data == "show_slip":
-        await query.edit_message_text("🎫 Fetching bet slip...")
+    if query.data == "show_slip":
         betslip_url = await get_todays_betslip_url()
         
         if betslip_url:
+            tz = pytz.timezone("America/Chicago")
+            today = datetime.now(tz).strftime("%B %d, %Y")
+            
             await query.message.reply_photo(
                 photo=betslip_url,
-                caption="🏆 <b>Today's Bet Slip</b>",
-                parse_mode="HTML"
-            )
-            await query.delete_message()
-        else:
-            await query.edit_message_text("❌ No bet slip available for today yet.")
-    
-    elif query.data == "show_report":
-        report_url = await get_latest_report_url()
-        
-        if report_url:
-            keyboard = [[InlineKeyboardButton("📄 Open PDF Report", url=report_url)]]
-            await query.edit_message_text(
-                "🏆 <b>WINNING CIRCLE</b>\n\nClick to view your report:",
-                reply_markup=InlineKeyboardMarkup(keyboard),
+                caption=f"🏆 <b>WINNING CIRCLE</b>\n📅 {today}",
                 parse_mode="HTML"
             )
         else:
-            await query.edit_message_text("❌ No report available yet.")
+            await query.answer("No bet slip available yet.", show_alert=True)
     
     else:
-        await query.edit_message_text("❌ Unknown selection.")
+        await query.answer("Unknown action.", show_alert=True)
 
 
 # ============ REGISTER HANDLERS ============
 tg_app.add_handler(CommandHandler("start", start))
 tg_app.add_handler(CommandHandler("help", help_cmd))
-tg_app.add_handler(CommandHandler("picks", picks_menu))
-tg_app.add_handler(CommandHandler("nba", nba_command))
-tg_app.add_handler(CommandHandler("nhl", nhl_command))
-tg_app.add_handler(CommandHandler("soccer", soccer_command))
-tg_app.add_handler(CommandHandler("ncaab", ncaab_command))
+tg_app.add_handler(CommandHandler("picks", picks_command))
 tg_app.add_handler(CommandHandler("slip", slip_command))
 tg_app.add_handler(CommandHandler("report", report_command))
 tg_app.add_handler(CallbackQueryHandler(button_callback))
@@ -427,37 +330,14 @@ async def health():
     return {"status": "ok", "bot": "Winning Circle"}
 
 
-@app.get("/test-openai")
-async def test_openai():
-    """Test endpoint to debug OpenAI connection."""
-    import traceback
-    
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        return {"error": "No OPENAI_API_KEY found in environment"}
-    
-    return_data = {
-        "api_key_found": True,
-        "api_key_prefix": api_key[:8] + "..." if len(api_key) > 8 else "too_short",
-        "api_key_length": len(api_key)
+@app.get("/debug/picks")
+async def debug_picks():
+    """Debug endpoint to check picks data."""
+    picks_data = await get_latest_picks()
+    return {
+        "picks_available": picks_data is not None,
+        "data": picks_data
     }
-    
-    try:
-        client = OpenAI(api_key=api_key)
-        response = client.chat.completions.create(
-            model="gpt-4o",
-            messages=[{"role": "user", "content": "Say hello in 5 words"}],
-            max_tokens=20
-        )
-        return_data["success"] = True
-        return_data["response"] = response.choices[0].message.content
-    except Exception as e:
-        return_data["success"] = False
-        return_data["error_type"] = type(e).__name__
-        return_data["error"] = str(e)
-        return_data["traceback"] = traceback.format_exc()
-    
-    return return_data
 
 
 @app.post("/webhook/{secret}")
