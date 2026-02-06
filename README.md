@@ -1,19 +1,20 @@
 <p align="center">
-  <img src="assets/logobot.png" alt="Winning Circle Bot" width="400" style="border-radius: 12px;"/>
+  <img src="assets/logobot2.png" alt="Winning Circle Bot" width="300" style="border-radius: 12px;"/>
 </p>
-</p>
-<h1 align="center">🏆 Winning Circle Bot</h1>
+
+<h1 align="center">Winning Circle Bot</h1>
 
 <p align="center">
   <b>AI-powered sports betting intelligence delivered via Telegram.</b>
 </p>
 
-![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python)
-![FastAPI](https://img.shields.io/badge/FastAPI-0.100+-green?logo=fastapi)
-![Telegram](https://img.shields.io/badge/Telegram-Bot-blue?logo=telegram)
-![Railway](https://img.shields.io/badge/Deployed-Railway-purple?logo=railway)
+<p align="center">
+  <img src="https://img.shields.io/badge/Python-3.11+-blue?logo=python" alt="Python"/>
+  <img src="https://img.shields.io/badge/FastAPI-0.100+-green?logo=fastapi" alt="FastAPI"/>
+  <img src="https://img.shields.io/badge/Telegram-Bot-blue?logo=telegram" alt="Telegram"/>
+  <img src="https://img.shields.io/badge/Deployed-Railway-purple?logo=railway" alt="Railway"/>
+</p>
 
----
 
 ## 📋 Overview
 
@@ -42,46 +43,35 @@ Winning Circle Bot is a Telegram bot that delivers daily AI-generated sports bet
 ---
 
 ## 🏗️ Architecture
+```mermaid
+flowchart TB
+    subgraph GA["🔄 GitHub Actions (Midnight CT)"]
+        OpenAI["🤖 OpenAI GPT-4o API<br/>10,000 simulation analysis"]
+        OpenAI --> GHP
+        subgraph GHP["📁 GitHub Pages"]
+            JSON["picks/picks_YYYY-MM-DD.json"]
+            PDF["reports/report_YYYY-MM-DD.pdf"]
+            PNG["betslips/betslip_YYYY-MM-DD.png"]
+        end
+    end
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    GitHub Actions                        │
-│                  (Runs at midnight CT)                   │
-│                         │                                │
-│                         ▼                                │
-│    ┌─────────────────────────────────────┐              │
-│    │         OpenAI GPT-4o API           │              │
-│    │   (10,000 simulation analysis)      │              │
-│    └─────────────────────────────────────┘              │
-│                         │                                │
-│                         ▼                                │
-│    ┌─────────────────────────────────────┐              │
-│    │         GitHub Pages                 │              │
-│    │  • picks/picks_YYYY-MM-DD.json      │              │
-│    │  • reports/report_YYYY-MM-DD.pdf    │              │
-│    │  • betslips/betslip_YYYY-MM-DD.png  │              │
-│    └─────────────────────────────────────┘              │
-└─────────────────────────────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────┐
-│                   Railway (WC_Bot)                       │
-│                         │                                │
-│    ┌─────────────────────────────────────┐              │
-│    │        FastAPI + Webhook            │              │
-│    └─────────────────────────────────────┘              │
-│                         │                                │
-│                         ▼                                │
-│    ┌─────────────────────────────────────┐              │
-│    │      python-telegram-bot            │              │
-│    └─────────────────────────────────────┘              │
-└─────────────────────────────────────────────────────────┘
-                          │
-                          ▼
-┌─────────────────────────────────────────────────────────┐
-│                   Telegram Users                         │
-│            (Group chats & Direct messages)               │
-└─────────────────────────────────────────────────────────┘
+    subgraph RW["🚂 Railway (WC_Bot)"]
+        FastAPI["⚡ FastAPI + Webhook"]
+        TGBot["🤖 python-telegram-bot"]
+        FastAPI --> TGBot
+    end
+
+    subgraph Users["👥 Telegram Users"]
+        Groups["Group Chats"]
+        DM["Direct Messages"]
+    end
+
+    GHP --> FastAPI
+    TGBot --> Users
+
+    style GA fill:#1a1a2e,stroke:#D4AF37,color:#fff
+    style RW fill:#1a1a2e,stroke:#D4AF37,color:#fff
+    style Users fill:#1a1a2e,stroke:#D4AF37,color:#fff
 ```
 
 ---
